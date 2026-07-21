@@ -45,7 +45,11 @@ game.StarterPlayer.StarterPlayerScripts.Controllers.CardEffectFXController ← F
 4. **Crear el ModuleScript** en `Services.Cards.Effects.Definitions` con nombre = effectId en MAYÚSCULAS (ej. `RUSH`). Copiar la estructura de `_TEMPLATE` o de un spec existente (`DAMAGE` para modifiers, `LIFESTEAL` para triggers).
 5. **Escribir `params` SOLO para los tiers donde el efecto existe** según el PDF (claves válidas: `Common`, `Uncommon`, `Rare`, `Epic`, `Legendary`). Todos los números balanceables van ahí, NUNCA hardcodeados en modifiers/triggers (se referencian por nombre string).
 6. **Escribir `describe(p)`** — string corto en español que verá el jugador en el álbum/HUD.
-7. **Bindear la carta**: añadir `card_0XX = "EFFECT_ID"` en `ReplicatedStorage.Shared.Config.CardEffectBindings`. La rareza de esa carta en `CardCatalog` **debe existir en `params`** del spec (si no, el carrier warnea y skipea esa carta — no revienta, pero el efecto no aplica).
+7. **Crear el SET de cartas del efecto (una carta por rareza) y bindearlas.**
+   **Regla "1 efecto = N cartas" (invariante de contenido):** cuando el diseño da valores por rareza (Common, Uncommon, …), NO se bindea el efecto a una carta suelta que ya existe. Se crea la **misma carta repetida en cada una de las rarezas donde el efecto existe** (mismo `displayName` en todas; lo único que cambia entre versiones es la rareza, que selecciona el `params[tier]` del spec — normalmente un %, pero puede ser cualquier número balanceable). Ejemplo: efecto con `Common/Uncommon/Rare/Epic/Legendary` → 5 cartas nuevas con el mismo nombre, una por rareza.
+   - En `CardCatalog` añadir una entrada por rareza: `card_0XX = { id="card_0XX", displayName="<Nombre>", rarity="<Tier>", textureId="rbxassetid://0", coinsPerSecond=<n> }`. El catálogo es data-driven (no hay tope fijo de cartas; el `_orderedIds` y la colección se autoexpanden). `coinsPerSecond` sigue las bandas por rareza del catálogo existente.
+   - En `CardEffectBindings` bindear **todas** esas cartas al MISMO effectId: `card_0XX = "EFFECT_ID"`.
+   - La rareza de cada carta **debe existir en `params`** del spec (si no, el carrier warnea y skipea esa carta — no revienta, pero el efecto no aplica). Por eso el set de cartas y las claves de `params` deben cubrir exactamente las mismas rarezas.
 8. **Verificar en frío**: `pcall(require)` del spec en el probe + confirmar que `EffectRegistry` lo registra (con `ENABLED=true` el boot imprime `[EffectRegistry] N efectos registrados` — debe subir en 1). Un spec inválido se skipea con warn: leer el warn, corregir.
 9. **Smoke test en play** (§8) — obligatorio antes de reportar terminado.
 10. **Revertir `CardsConfig.ENABLED` al valor en que estaba** (hoy el estándar es `false` hasta el lanzamiento; solo se enciende para testear).
@@ -291,3 +295,4 @@ Más `card_0XX = "RUSH"` en `CardEffectBindings`. Nada más.
 - ❌ Tocar `_ammo`/atributos de arma directo desde un efecto — para eso están `refillAmmo` y los statKeys del patcher.
 - ❌ Dejar `ENABLED` o `DEBUG_BUS` flipeados, o Scripts de test sin borrar.
 - ❌ Reportar "terminado" sin el checklist de §8.
+- ❌ Bindear un efecto con valores por rareza a UNA sola carta suelta. Si el diseño da valores por rareza, se crea el **set completo**: la misma carta (mismo `displayName`) repetida en cada rareza donde el efecto existe, todas bindeadas al mismo effectId (§1 paso 7).

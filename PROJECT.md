@@ -8,7 +8,7 @@ Prototipo de juego multiplayer en Roblox basado en mecánica Rock-Paper-Scissors
 ---
 
 ## Estado Actual
-- **Última actualización**: 2026-05-06
+- **Última actualización**: 2026-07-21
 - **Etapa**: Prototipo en desarrollo
 - **Plataforma**: Roblox Studio (Luau)
 - **Versión**: 0.1.0 (MVP inicial)
@@ -278,6 +278,7 @@ Luego, todas las armas usan: `DamageCalculator.applyWithMultiplier(...)`
 
 | Fecha | Versión | Cambio | Impacto |
 |-------|---------|--------|--------|
+| 2026-07-21 | 0.3.2 | Fix jugador atascado en puerta: blocker anti-retroceso pasa a CLIENT-SIDE, se eliminan los CollisionGroups per-player (`Crosser_*`/`PlayerBlocker_*`) | Se acaba el soft-lock desde el jugador ~14; grupos pasan de crecer sin límite a 5/32 constantes; escala a 60+ jugadores |
 | 2026-05-14 | 0.3.1 | Doc: sección "Soporte de Layouts No-Lineales" - qué cambiar para cuartos que doblen/ramifiquen | Roadmap claro para layouts no-lineales |
 | 2026-05-14 | 0.3.1 | Fix puerta cerrada atravesable: RaycastBlocker/BackVisual 4 studs antes de BackVolume + nudge anti-stuck empuja ATRAS + `_onBackTouched` ignora si puerta cerrada | Imposible avanzar de cuarto con puerta cerrada |
 | 2026-05-13 | 0.3.0 | Sistema de Cuartos v2 (DoorActor) - Event-driven, blockers per-player | Eliminar polling Z y agregar blocker visual per-jugador |
@@ -311,7 +312,7 @@ Workspace.Level/
 ```
 
 ### Modulos Server-side (`ServerScriptService.RoomSystem/`)
-- **CollisionGroupsBootstrap** - Registra grupos `NPCs`, `NPCBlocker`, `Crosser_<UserId>`, `PlayerBlocker_<UserId>`. Configura matrix per-player para que el blocker fisico solo sea solido para su crosser.
+- **CollisionGroupsBootstrap** - Registra SOLO grupos estaticos: `NPCs`, `NPCBlocker`. Cantidad constante, no crece con jugadores. (Ver "Blocker anti-retroceso" abajo.)
 - **DoorActor** - Encapsula una puerta. API: `setOpen`, `spawnBlockerFor(player)`, `removeBlockerFor(player)`, `removeAllBlockers`. Signals: `PlayerEntered`, `PlayerExited`, `PlayerLeftBack`.
 - **RoomScanner** - Lee Attributes + Door/References de cada Room y devuelve `roomDesc`.
 - **RoomInstance** - Solo NPC lifecycle. Callbacks: `onSpawned`, `onCleared`, `onReset`, `onNpcCountChanged`. (Sin logica de puertas).
@@ -325,9 +326,47 @@ Workspace.Level/
 5. NPCs mueren -> `onCleared` -> `doorActor[X]:setOpen(true)` + remover blockers + reward UI + spawn Room X+1.
 6. Si player retrocede via `PlayerLeftBack` (solo posible en rooms con `BlocksBackward=false`, es decir Room0 y Room1) -> RoomManager checkDespawn rooms adelante.
 
-### Per-Player Visibility
-- LocalScript `StarterPlayer.StarterPlayerScripts.BlockerVisibility` escucha `ReplicatedStorage.Shared.RoomRemotes.BlockerVisibility` y aplica `LocalTransparencyModifier=1` a las Parts blocker de otros jugadores.
-- Cada blocker vive en su propio CollisionGroup `PlayerBlocker_<UserId>` que SOLO colisiona con `Crosser_<UserId>`.
+### Blocker anti-retroceso (CLIENT-SIDE)
+
+El blocker lo construye el **cliente dueño**, no el servidor.
+
+- `DoorActor:spawnBlockerFor(player)` solo hace `FireClient(player, "add", roomId, anchorCFrame)`.
+  El servidor NO crea ninguna Part; `self._blockers[uid]` es un flag booleano.
+- LocalScript `StarterPlayer.StarterPlayerScripts.BlockerVisibility` clona
+  `ReplicatedStorage.Shared.BlockerTemplate`, lo pivotea al CFrame recibido y lo parenta a
+  `workspace` **localmente**. Una part local solo existe para ese cliente ⇒ aislamiento
+  per-player gratis, **cero CollisionGroups**.
+- Protocolo: `("add", roomId, cframe)` | `("remove", roomId)` | `("clear")`. Se indexa por
+  `roomId` porque un jugador puede tener blockers en varias puertas.
+
+**⚠️ POR QUÉ (bug de producción, 2026-07-21):** Roblox tiene un límite **duro de 32
+CollisionGroups por lugar**. La versión anterior registraba 2 grupos por jugador
+(`Crosser_<UserId>` + `PlayerBlocker_<UserId>`) y **nunca los liberaba al salir**. Con 5 grupos
+base el presupuesto real era de **~13 jugadores por vida del servidor** (acumulados, no
+simultáneos) contra `MaxPlayers=60`. Modo de fallo, todo silencioso:
+
+1. `RegisterCollisionGroup` falla (`Cannot register more than 32 collision groups`) pero el
+   módulo marcaba el grupo como registrado igual → nunca reintentaba.
+2. `CollisionGroupSetCollidable` falla (`Both collision groups must be registered`) → ese
+   jugador queda **sin ninguna entrada en la matrix**.
+3. `part.CollisionGroup = "Crosser_<uid>"` **NO lanza error**: asigna el nombre igual y deja
+   la part en un grupo **fantasma** que colisiona con TODO y al que no se le puede configurar
+   ninguna excepción.
+4. Resultado: ese jugador chocaba contra el `NPCBlocker` (invisible, `CanCollide=true`
+   siempre, dentro del `BackVolume`) y **quedaba atascado en la puerta** mientras el resto
+   pasaba normal. Irreproducible en Studio (nunca hay 14 joiners únicos en solo).
+
+`Crosser_<UserId>` era además **redundante**: todas sus reglas eran idénticas a las de
+`Default`. Los personajes ahora quedan en `Default`, con comportamiento idéntico.
+
+**Seguridad:** un exploiter puede borrar su blocker local pero no gana nada — el servidor no
+avanza el tracking con la puerta cerrada (`_onBackTouched` hace early-return si `not _open`) y
+el `RaycastBlocker` sigue siendo sólido server-side. El blocker solo impide el RETROCESO, que
+no otorga ventaja. La autoridad no cambió respecto de antes.
+
+**Invariante a sostener:** el número de CollisionGroups debe ser **constante**. Si algún
+sistema futuro necesita aislamiento per-player, resolverlo con parts locales del cliente, no
+con grupos. Presupuesto actual: 5/32 (`Default`, `NPCs`, `NPCBlocker`, `Enemies`, `Decorations`).
 
 ### Attributes de Room (configurables desde Studio)
 - `RoomType` ("COMBAT"|"CORRIDOR"|"FINAL"), `DisplayName`, `MaxAttackers`, `HealthMult`, `DamageMult`, `Armor`, **`BlocksBackward`** (bool, nuevo).
