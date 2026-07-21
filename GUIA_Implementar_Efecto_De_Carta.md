@@ -74,7 +74,7 @@ Ejemplos de mapeo (efectos reales del PDF):
 - *Last Standing* ("bajo 35 % de vida, +X% velocidad") → modifier `MoveSpeed` con `condition = {type="hpBelowPct", pct=0.35}`. Sin triggers.
 - *Detonation* ("X% de chance de que al matar, explote en área") → trigger `EnemyKilled` + `chance` + acción `aoeDamage`.
 - *Last Reserves* ("la última mitad del cargador hace +X% daño") → modifier `ShotDamage` percent con condición sobre el ctx del disparo (ver §5, weaponScope/ctx) — el BlasterServer resuelve `ShotDamage` por disparo pasando `ammoBefore/magazineSize` en el ctx.
-- *Rifle Marksman* ("−mag, −cadencia, ++daño, solo rifles") → 3 modifiers con `weaponScope="rifle"`.
+- *Rifle Marksman* ("−mag, −cadencia, ++daño, solo rifles") → 3 modifiers con `weaponScope="rifle"`: `MagazineSize` y `RateOfFire` en negativo, y el daño con **`ShotDamage`** (NO `Damage`: con `weaponScope` ese statKey no aplica nunca — ver §3).
 - *Coin Savings* ("bajo 35 % HP, las monedas curan") → trigger `CoinsGained` + `condition hpBelowPct` + acción `heal`.
 - *Coin Excess* ("monedas valen +X% con vida llena") → modifier `CoinValue` percent con `condition = {type="hpAtMax"}`.
 - *Pistol Efficiency / Infinite Mags* ("X% de no consumir bala") → modifier `AmmoSaveChance` **flat** (con `weaponScope="pistol"` en el primero). El roll lo hace el servidor del Blaster solo — no necesitas trigger.
@@ -88,8 +88,8 @@ Percent son **aditivos** entre sí: dos +10 % = ×1.20. `value` casi siempre es 
 
 | statKey | valueType | Efecto real | Consumidor (ya cableado) |
 |---|---|---|---|
-| `Damage` | percent | daño global de TODOS los disparos | DamageCalculator |
-| `ShotDamage` | percent | daño POR DISPARO, evaluado con ctx del tiro (`ammoBefore`, `magazineSize`, `archetype`, `tool`) — para efectos condicionales de cargador | BlasterServer.onShoot |
+| `Damage` | percent | daño global de TODOS los disparos. **⚠️ NO admite `weaponScope`** (ver aviso abajo) | DamageCalculator |
+| `ShotDamage` | percent | daño POR DISPARO, evaluado con ctx del tiro (`ammoBefore`, `magazineSize`, `archetype`, `tool`) — para efectos condicionales de cargador **y para todo daño acotado por arquetipo** | BlasterServer.onShoot |
 | `DamageReduction` | flat | resta plana al daño recibido | PlayerService.takeDamage |
 | `MoveSpeed` | percent | velocidad de movimiento (compone con la tienda) | PlayerStatSync + PowerUps |
 | `RateOfFire` | percent | cadencia (compone con boons legacy) | WeaponStatPatcher |
@@ -106,6 +106,13 @@ Percent son **aditivos** entre sí: dos +10 % = ×1.20. `value` casi siempre es 
 Clamps de sanidad en `EffectsConfig.CLAMPS` (reload mín 0.15 s, RoF máx 1200, etc.) — el patcher los aplica solo.
 
 **⚠️ `Damage` vs `ShotDamage`:** global → `Damage`; condicional-por-disparo (depende del cargador/tiro) → `ShotDamage`. Usar los dos para lo mismo = doble multiplicación.
+
+**⚠️⚠️ `Damage` es INCOMPATIBLE con `weaponScope` (falla en SILENCIO).** Si el efecto es "+X% de daño **solo con rifles/pistolas/…**", el modifier DEBE ser `ShotDamage`, nunca `Damage`.
+- Por qué: `DamageCalculator.getMultiplier` resuelve el daño global llamando `CardStats.mult(attacker, "Damage")` **sin ctx**. Sin ctx no hay `ctx.archetype`, y `ModifierStore.resolve` marca INACTIVO todo record cuyo `weaponScope ~= nil` (compara `"rifle" ~= nil` → nunca activo). El modifier queda registrado pero **jamás aplica, y no hay warn ni error**: el efecto simplemente no hace nada.
+- `ShotDamage` sí funciona con scope porque `BlasterServer.onShoot` lo resuelve pasando `ctx = { archetype, tool, ammoBefore, magazineSize }`.
+- Regla corta: **daño acotado por arma → `ShotDamage`. Daño global (sin `weaponScope`) → `Damage`.**
+- Cómo detectarlo en el smoke test: comparar `CardStats.mult(p, "Damage")` (sin ctx) contra `CardStats.mult(p, "ShotDamage", {archetype="rifle"})`. Si el primero da `1.00` con el efecto attacheado, el modifier está muerto.
+- Los demás statKeys con `weaponScope` (`RateOfFire`, `MagazineSize`, `Spread`, `Range`, `RayRadius`, `RaysPerShot`, `Recoil`, `AmmoSaveChance`) SÍ funcionan: los resuelve `WeaponStatPatcher`, que siempre pasa `ctx.archetype` leído de la Tool.
 
 ---
 
@@ -295,4 +302,5 @@ Más `card_0XX = "RUSH"` en `CardEffectBindings`. Nada más.
 - ❌ Tocar `_ammo`/atributos de arma directo desde un efecto — para eso están `refillAmmo` y los statKeys del patcher.
 - ❌ Dejar `ENABLED` o `DEBUG_BUS` flipeados, o Scripts de test sin borrar.
 - ❌ Reportar "terminado" sin el checklist de §8.
+- ❌ Combinar el statKey `Damage` con `weaponScope` (del spec o del propio modifier). No aplica NUNCA y falla en silencio — para daño acotado por arquetipo va `ShotDamage` (§3).
 - ❌ Bindear un efecto con valores por rareza a UNA sola carta suelta. Si el diseño da valores por rareza, se crea el **set completo**: la misma carta (mismo `displayName`) repetida en cada rareza donde el efecto existe, todas bindeadas al mismo effectId (§1 paso 7).
