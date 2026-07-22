@@ -164,7 +164,7 @@ Clamps de sanidad en `EffectsConfig.CLAMPS` (reload mín 0.15 s, RoF máx 1200, 
 | type | campos | hace |
 |---|---|---|
 | `heal` | `amount \| pctOfMax \| pctOfDamage`, `roundMode?` ("floor" = truncar) | cura vía PlayerService |
-| `grantBuff` | `buffId, duration, maxStacks?, stackBehavior? ("refresh"\|"stack"\|"stackRefresh"), modifiers={...}` | buff temporal; los modifiers usan el MISMO formato de §3 |
+| `grantBuff` | `buffId, duration, maxStacks?, stackBehavior? ("refresh"\|"stack"\|"stackRefresh"), modifiers={...}` | buff temporal; los modifiers usan el MISMO formato de §3, **pero NO heredan el `weaponScope` del spec** (repetirlo en cada uno — ver abajo) |
 | `grantBuffToNearbyTeammates` | igual + `radius?` | buff al player Y a compañeros cercanos (Reload Motivation) |
 | `refillAmmo` | `pctOfMagazine \| amount` | repone balas sin exceder cargador |
 | `aoeDamage` | `radius, damage \| damagePct, vfxId?` | daño en área a enemigos (Detonation); damagePct = % del daño del arma equipada |
@@ -172,9 +172,21 @@ Clamps de sanidad en `EffectsConfig.CLAMPS` (reload mín 0.15 s, RoF máx 1200, 
 
 Todos los valores numéricos aceptan string-ref a `params[tier]`. Las acciones corren en orden y son pcall-safe.
 
-**Buffs — 2 cosas importantes:**
+**Buffs — 3 cosas importantes:**
 1. `buffId` es único por player: dos cartas que otorguen el MISMO `buffId` comparten el buff (a veces deseable; si no, prefija con el effectId: `"RUSH_BUFF"`).
-2. ⚠️ **Pendiente conocido:** los buffs NO se limpian en muerte (solo expiran por duración o en detachAll/salida). Para buffs cortos (≤10 s) es irrelevante. Si implementas el PRIMER efecto con buffs largos, avisa al orquestador para cablear el hook muerte→limpieza (está anotado como deuda de E3).
+2. ⚠️⚠️ **Los modifiers de un `grantBuff` NO heredan el `weaponScope` del spec — hay que repetirlo en CADA uno.** Si el efecto es "solo escopetas/rifles/…" y el buff omite `weaponScope`, el buff aplica a **TODAS las armas** (falla en silencio, sin warn).
+   - Por qué: `EffectRuntime.attach()` registra los modifiers pasivos con `weaponScope = m.weaponScope or spec.weaponScope` (sí hereda), pero `EffectRuntime.grantBuff()` los registra con `weaponScope = m.weaponScope` **a secas**. Es estructural: `grantBuff(player, buffSpec, params)` nunca recibe el spec, así que no puede conocer su scope.
+   - Correcto:
+     ```lua
+     { type = "grantBuff", buffId = "X_BUFF", duration = "duration",
+       modifiers = {
+           { statKey = "Spread", valueType = "percent", value = "spreadPct", weaponScope = "shotgun" },
+           { statKey = "Range",  valueType = "percent", value = "rangePct",  weaponScope = "shotgun" },
+       } },  -- ↑ weaponScope repetido en CADA modifier, aunque el spec ya lo declare
+     ```
+   - Cómo detectarlo en el smoke test: tras otorgar el buff, resolver el stat con un `ctx.archetype` de OTRO arquetipo. Si no da `1.00`, el scope se perdió.
+   - Es la misma familia de fallo que `Damage` + `weaponScope` (§3): el scope se pierde sin avisar.
+3. ⚠️ **Pendiente conocido:** los buffs NO se limpian en muerte (solo expiran por duración o en detachAll/salida). Para buffs cortos (≤10 s) es irrelevante. Si implementas el PRIMER efecto con buffs largos, avisa al orquestador para cablear el hook muerte→limpieza (está anotado como deuda de E3).
 
 **VFX (Regla #2 del proyecto — editor-authored):** el código NUNCA construye visuales con Instance.new. Si el efecto lleva VFX: usar la acción `vfx`/`vfxId` y pedir al usuario que autore el template en `ReplicatedStorage.CardEffectVFX.<vfxId>` (Model/Part con ParticleEmitters; atributos opcionales `EmitCount`, `Lifetime`). Si el template no existe, el cliente warnea una vez y degrada en silencio — el efecto de gameplay funciona igual.
 
@@ -302,5 +314,6 @@ Más `card_0XX = "RUSH"` en `CardEffectBindings`. Nada más.
 - ❌ Tocar `_ammo`/atributos de arma directo desde un efecto — para eso están `refillAmmo` y los statKeys del patcher.
 - ❌ Dejar `ENABLED` o `DEBUG_BUS` flipeados, o Scripts de test sin borrar.
 - ❌ Reportar "terminado" sin el checklist de §8.
+- ❌ Omitir `weaponScope` en los modifiers de un `grantBuff` creyendo que lo hereda del spec. No lo hereda (§6): el buff acabaría aplicando a todas las armas, en silencio.
 - ❌ Combinar el statKey `Damage` con `weaponScope` (del spec o del propio modifier). No aplica NUNCA y falla en silencio — para daño acotado por arquetipo va `ShotDamage` (§3).
 - ❌ Bindear un efecto con valores por rareza a UNA sola carta suelta. Si el diseño da valores por rareza, se crea el **set completo**: la misma carta (mismo `displayName`) repetida en cada rareza donde el efecto existe, todas bindeadas al mismo effectId (§1 paso 7).
