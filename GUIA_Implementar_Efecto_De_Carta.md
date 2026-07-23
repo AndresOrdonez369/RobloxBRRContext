@@ -2,7 +2,7 @@
 
 > **Para quién:** cualquier modelo/agente (o humano) que deba implementar un efecto de carta nuevo en el place **"Patio de recreo de Brainrot"** (Studio). Esta guía es autocontenida: siguiéndola paso a paso, el efecto queda acoplado al sistema sin tocar el núcleo.
 >
-> **Estado del framework:** Fases E0–E3 completas y verificadas (bus de eventos, providers de estado, condiciones, modificadores, patcher de armas, motor de efectos, registry, carrier de boons, FX cliente). Los 5 arquetipos originales ya viven como specs y sirven de referencia.
+> **Estado del framework:** Fases E0–E3 completas y verificadas (bus de eventos, providers de estado, condiciones, modificadores, patcher de armas, motor de efectos, registry, carrier de boons, FX cliente). **Hay 14 efectos implementados y verificados en el place** — declarativos, con triggers/buffs y con hooks. Antes de escribir uno nuevo, busca en §9 el que más se parezca y cópialo.
 >
 > **Regla de oro:** un efecto nuevo = **1 ModuleScript en `Definitions/` + 1 línea en `CardEffectBindings`**. Si para implementar un efecto sientes que necesitas editar el motor, PARA y reporta: o el efecto necesita un hook (§7), o falta un seam que se decide con el orquestador. **Nunca** edites EffectRuntime/ModifierStore/GameEventBus/ActionLibrary/BoonManager para un efecto puntual.
 
@@ -73,7 +73,7 @@ Ejemplos de mapeo (efectos reales del PDF):
 - *Rush* ("al entrar a un cuarto, +X% velocidad y recarga por Xs") → trigger `RoomEntered` → acción `grantBuff` con modifiers MoveSpeed+ReloadSpeed.
 - *Last Standing* ("bajo 35 % de vida, +X% velocidad") → modifier `MoveSpeed` con `condition = {type="hpBelowPct", pct=0.35}`. Sin triggers.
 - *Detonation* ("X% de chance de que al matar, explote en área") → trigger `EnemyKilled` + `chance` + acción `aoeDamage`.
-- *Last Reserves* ("la última mitad del cargador hace +X% daño") → modifier `ShotDamage` percent con condición sobre el ctx del disparo (ver §5, weaponScope/ctx) — el BlasterServer resuelve `ShotDamage` por disparo pasando `ammoBefore/magazineSize` en el ctx.
+- *Last Reserves* ("la última mitad del cargador hace +X% daño") → modifier `ShotDamage` percent con `condition = {type="magazineBelowPct", pct=0.5}` (§5) — el BlasterServer resuelve `ShotDamage` por disparo pasando `ammoBefore/magazineSize` en el ctx, que es lo que el predicado necesita. **Ya implementado**: ver `Definitions/LAST_RESERVES`.
 - *Rifle Marksman* ("−mag, −cadencia, ++daño, solo rifles") → 3 modifiers con `weaponScope="rifle"`: `MagazineSize` y `RateOfFire` en negativo, y el daño con **`ShotDamage`** (NO `Damage`: con `weaponScope` ese statKey no aplica nunca — ver §3).
 - *Coin Savings* ("bajo 35 % HP, las monedas curan") → trigger `CoinsGained` + `condition hpBelowPct` + acción `heal`.
 - *Coin Excess* ("monedas valen +X% con vida llena") → modifier `CoinValue` percent con `condition = {type="hpAtMax"}`.
@@ -91,7 +91,7 @@ Percent son **aditivos** entre sí: dos +10 % = ×1.20. `value` casi siempre es 
 | `Damage` | percent | daño global de TODOS los disparos. **⚠️ NO admite `weaponScope`** (ver aviso abajo) | DamageCalculator |
 | `ShotDamage` | percent | daño POR DISPARO, evaluado con ctx del tiro (`ammoBefore`, `magazineSize`, `archetype`, `tool`) — para efectos condicionales de cargador **y para todo daño acotado por arquetipo** | BlasterServer.onShoot |
 | `DamageReduction` | flat | resta plana al daño recibido | PlayerService.takeDamage |
-| `MoveSpeed` | percent | velocidad de movimiento (compone con la tienda) | PlayerStatSync + PowerUps |
+| `MoveSpeed` | percent | velocidad de movimiento (compone con tienda y eventos — ver aviso abajo). **⚠️ NO admite `weaponScope`** | PlayerStatSync + PowerUps |
 | `RateOfFire` | percent | cadencia (compone con boons legacy) | WeaponStatPatcher |
 | `ReloadSpeed` | percent | mult>1 = recarga MÁS rápida (`reloadTime = base/mult`) | WeaponStatPatcher |
 | `MagazineSize` | percent/flat | tamaño de cargador (clampa ammo, nunca regala balas) | WeaponStatPatcher |
@@ -103,11 +103,38 @@ Percent son **aditivos** entre sí: dos +10 % = ×1.20. `value` casi siempre es 
 | `AmmoSaveChance` | **flat only** | prob. 0..1 de NO consumir bala (clamp 0.95) | BlasterServer roll |
 | `CoinValue` | percent | valor de las monedas ganadas (ctx.source disponible) | PlayerService.addCoins |
 
+**⚠️ `MoveSpeed`: la velocidad del jugador NO es fija — nunca la hardcodees.** Un efecto de velocidad **solo declara su porcentaje**; nunca escribe `WalkSpeed` ni asume un valor base. La composición la hace el sistema:
+
+```
+WalkSpeed = velocidadBase(nivel de tienda)  ×  multDeCartas  ×  multDeEventos(Speed Rush)
+```
+
+- La **base sube con la tienda** (`PowerUps:GetMovementSpeed`, curva por nivel). Se lee **en vivo en cada aplicación**, así que un "+10%" se aplica siempre sobre la velocidad mejorada real del jugador, sin tocar nada. En el place de prueba la base estaba en 16.52, no en 16.
+- Los **eventos/boosters** (Speed Rush, ×1.20 temporal) son un tercer factor multiplicativo, aparte de la tienda y de las cartas.
+- Los percent de cartas son **aditivos entre sí** (`mult = 1 + Σ value×stacks`) y luego multiplican a los otros dos factores.
+
+**Hay TRES escritores de `WalkSpeed` y los tres deben usar la MISMA fórmula:** `PowerUpsShop:_applyMovementSpeed` (compra), `PowerUpsManager:ApplyToCharacter` (spawn / grant de booster) y `PlayerStatSync.applyMoveSpeed` (cambios de modifier en runtime). Si tocas la composición de velocidad, actualiza los tres o quedan inconsistentes.
+
+> 🐞 **Bug ya corregido (histórico, útil como advertencia):** `PlayerStatSync` escribía solo `base × cartas` y **perdía el factor de eventos**. Como corre en cada cambio de modifier de MoveSpeed, cualquier carta de velocidad borraba el bonus del evento activo. Medido con SMG_RUSH: con Speed Rush (×1.20) activo, ganar un stack de +10% **bajaba** WalkSpeed de 19.82 a 18.17 en vez de subirla a 21.81 — el jugador se volvía MÁS LENTO al recibir un buff de velocidad. Corregido y verificado (los tres escritores ya componen igual). **Al implementar un efecto de MoveSpeed, sigue verificando la composición con un booster activo en el smoke test** (`BoosterService.grant(player, "SpeedRush")`): es la clase de regresión que no da warn ni error.
+
 Clamps de sanidad en `EffectsConfig.CLAMPS` (reload mín 0.15 s, RoF máx 1200, etc.) — el patcher los aplica solo.
 
 **⚠️ `Damage` vs `ShotDamage`:** global → `Damage`; condicional-por-disparo (depende del cargador/tiro) → `ShotDamage`. Usar los dos para lo mismo = doble multiplicación.
 
-**⚠️⚠️ `Damage` es INCOMPATIBLE con `weaponScope` (falla en SILENCIO).** Si el efecto es "+X% de daño **solo con rifles/pistolas/…**", el modifier DEBE ser `ShotDamage`, nunca `Damage`.
+**⚠️⚠️ Qué statKeys admiten `weaponScope` y cuáles NO.** El scope por arquetipo solo funciona si el CONSUMIDOR del stat resuelve pasando `ctx.archetype`. Si no lo pasa, `ModifierStore.resolve` compara `"rifle" ~= nil` y deja el record **inactivo para siempre, sin warn ni error**.
+
+| Consumidor | ¿pasa `ctx.archetype`? | statKeys | `weaponScope` |
+|---|---|---|---|
+| `WeaponStatPatcher.patchTool` | Sí (`{archetype, tool}`) | `RateOfFire`, `ReloadSpeed`, `MagazineSize`, `Spread`, `Range`, `RayRadius`, `RaysPerShot`, `Recoil`, `AmmoSaveChance` | ✅ funciona |
+| `BlasterServer.onShoot` | Sí (`{archetype, tool, ammoBefore, magazineSize}`) | `ShotDamage` | ✅ funciona |
+| `DamageCalculator.getMultiplier` | **No** (sin ctx) | `Damage` | ❌ **nunca aplica** |
+| `PlayerStatSync.applyMoveSpeed` | **No** (sin ctx) | `MoveSpeed` | ❌ **nunca aplica** |
+| `PlayerService.takeDamage` | **No** (sin ctx) | `DamageReduction` | ❌ **nunca aplica** |
+| `PlayerService.addCoins` | Solo `{source}`, sin archetype | `CoinValue` | ❌ **nunca aplica** |
+
+Regla corta: **stats de ARMA aceptan `weaponScope`; stats de JUGADOR y economía no.** Para acotar por arquetipo un efecto de stat de jugador (ej. "matar con SMG da velocidad"), el filtro va en el **trigger** (`spec.weaponScope` filtra por `ctx.archetype` del evento), NO en el modifier. Ver `Definitions/SMG_RUSH`.
+
+**Caso especial `Damage`:** Si el efecto es "+X% de daño **solo con rifles/pistolas/…**", el modifier DEBE ser `ShotDamage`, nunca `Damage`.
 - Por qué: `DamageCalculator.getMultiplier` resuelve el daño global llamando `CardStats.mult(attacker, "Damage")` **sin ctx**. Sin ctx no hay `ctx.archetype`, y `ModifierStore.resolve` marca INACTIVO todo record cuyo `weaponScope ~= nil` (compara `"rifle" ~= nil` → nunca activo). El modifier queda registrado pero **jamás aplica, y no hay warn ni error**: el efecto simplemente no hace nada.
 - `ShotDamage` sí funciona con scope porque `BlasterServer.onShoot` lo resuelve pasando `ctx = { archetype, tool, ammoBefore, magazineSize }`.
 - Regla corta: **daño acotado por arma → `ShotDamage`. Daño global (sin `weaponScope`) → `Damage`.**
@@ -154,8 +181,13 @@ Clamps de sanidad en `EffectsConfig.CLAMPS` (reload mín 0.15 s, RoF máx 1200, 
 | `nearTeammate` | — | hay compañero a ≤20 studs |
 | `noDamageForSeconds` | `s` | lleva ≥s segundos sin recibir daño |
 | `weaponArchetypeIs` | `archetype` | arma del ctx (o equipada) es rifle/pistol/smg/shotgun |
+| `magazineBelowPct` | `pct` (0..1) | el disparo cae en el ÚLTIMO `pct` del cargador (`ammoBefore / magazineSize <= pct`). Para efectos tipo *Last Reserves* |
 
 `weaponScope` del spec ya filtra por arquetipo en modifiers y triggers — usa `weaponArchetypeIs` solo para casos cruzados. Si el efecto necesita un predicado que no existe, se añade en `ConditionRegistry` (ese SÍ es un cambio al framework: consultarlo, no improvisarlo).
+
+**⚠️ Condiciones que dependen del ctx del disparo → el modifier DEBE ser `ShotDamage`.** `magazineBelowPct` (y cualquier predicado futuro que lea `ammoBefore`/`magazineSize`/`archetype` del tiro) solo tiene su semántica plena cuando `eval` recibe el ctx. El único statKey de daño que se resuelve CON ctx es `ShotDamage` (lo pasa `BlasterServer.onShoot`); `Damage` se resuelve sin ctx, así que la condición caería a su fallback y además leería el ammo **ya decrementado** — se equivocaría justo en la bala del umbral. Esto aplica **aunque el efecto no tenga `weaponScope`** (es un motivo distinto al de §3, mismo desenlace).
+
+*Nota de implementación de `magazineBelowPct`:* el umbral es inclusivo (`<=`), así que con `pct = 0.5` y cargador de 30, la bala nº15 YA cuenta como "última mitad". Escala con el arma (no hardcodea un número de balas): con cargador de 11 el corte cae en 5.5.
 
 ---
 
@@ -171,6 +203,17 @@ Clamps de sanidad en `EffectsConfig.CLAMPS` (reload mín 0.15 s, RoF máx 1200, 
 | `vfx` | `vfxId, position?, data?` | solo feedback visual |
 
 Todos los valores numéricos aceptan string-ref a `params[tier]`. Las acciones corren en orden y son pcall-safe.
+
+**Curaciones — cómo conviven varios efectos que dan vida:**
+
+Las curaciones **no chocan entre sí**, y eso es por diseño: `heal` es una ACCIÓN (no un modifier), así que no hay estado compartido donde colisionar. Cada efecto llama a `PlayerService.heal` por su cuenta y los montos **se suman**. Verificado: con *Shotgun Vampirism* (+12 HP por kill) y *Lifesteal* (+20 HP por golpe) equipados a la vez, un disparo letal cura 32 HP — ninguno pisa al otro. No hace falta ninguna convención de nombres (a diferencia de `buffId`, que sí es identidad compartida).
+
+Lo que **sí** hay que respetar al escribir un efecto que cure:
+
+1. ⚠️⚠️ **Un efecto que cura NUNCA debe dispararse con `PlayerHealed`.** `PlayerService.heal` emite `onHealthChanged`, de donde el bus deriva `PlayerHealed`: curar dentro de ese trigger se realimenta en **bucle infinito**. Si diseño pide algo tipo "al curarte, cúrate más", hay que pedir un seam con guarda al orquestador, no improvisarlo. (Mismo cuidado con cualquier acción que dispare el evento al que el propio trigger escucha.)
+2. **El overheal ya está clampeado** (`math.min(maxHealth, ...)`): curar con la vida llena es un no-op seguro, no hay que chequearlo en el efecto. Ojo con la otra cara: curar a vida ya llena **no** dispara `PlayerHealed` (delta 0) — ver §4.
+3. **`heal` tiene mínimo 1 HP** (`math.max(1, ...)` en ActionLibrary) siempre que el monto resuelto sea > 0. Con porcentajes chicos sobre vida baja, varias cartas de curación redondean cada una a 1 HP y suman más de lo que sugiere la aritmética. Es un detalle de balance a tener en cuenta al elegir los `params`, no un bug.
+4. **`pctOfMax` escala solo con la vida máxima del jugador — esto es correcto y deseado.** `heal` lee `PlayerService.getState(player).maxHealth` **en vivo, en cada curación** (no un valor cacheado al equipar), y las mejoras de tienda actualizan ese mismo campo vía `setMaxHealth`. O sea: una carta de "+12% de vida" cura 12 HP con 100 de vida máxima y 18 con 150, sin tocar nada. Lo único a tener en cuenta es al **fijar los `params`**: no hagas la cuenta mental asumiendo 100 de vida máxima ni leas los resultados de un test como si fueran HP fijos (en el place de prueba la vida máxima estaba en 102, así que un 3% daba 3.06 → 3 HP).
 
 **Buffs — 3 cosas importantes:**
 1. `buffId` es único por player: dos cartas que otorguen el MISMO `buffId` comparten el buff (a veces deseable; si no, prefija con el effectId: `"RUSH_BUFF"`).
@@ -258,11 +301,31 @@ Runtime.detachAll(p)
 
 ## 9. Ejemplos completos de referencia
 
-**Ya en el place** (leer antes de escribir el primero):
-- `Definitions/DAMAGE` — modifier pasivo mínimo.
-- `Definitions/IRON_SKIN` — flat en vez de percent.
-- `Definitions/LIFESTEAL` — trigger + acción con `roundMode`.
-- `Definitions/_TEMPLATE` — schema completo comentado.
+**Ya en el place** — 14 efectos. Busca el que más se parezca al tuyo y cópialo; casi todo patrón nuevo ya tiene precedente. `_TEMPLATE` es el schema completo comentado.
+
+*Declarativos — solo modifiers pasivos:*
+- `DAMAGE` — modifier pasivo mínimo (percent, global). **El más simple: empieza acá.**
+- `IRON_SKIN` — `flat` en vez de `percent`.
+- `RATE_OF_FIRE`, `SCATTER` — stats de arma vía WeaponStatPatcher.
+- `INFINITE_MAGS` — `AmmoSaveChance` flat (el roll lo hace el Blaster solo, sin trigger).
+- `PISTOL_EFFICIENCY` — igual que el anterior + `weaponScope`. **Ejemplo de efecto que NO existe en las 5 rarezas** (solo Rare/Epic/Legendary → su set tiene 3 cartas).
+- `WORLDS_SMALLEST_GUN` — varios modifiers con trade-off (+`RayRadius` / −`MagazineSize`), scoped a pistol.
+- `RIFLE_MARKSMAN` — 3 modifiers con trade-off scoped a rifle. **Referencia de por qué el daño acotado por arma va en `ShotDamage` y no en `Damage`** (§3).
+- `LAST_RESERVES` — modifier con **condición sobre el ctx del disparo** (`magazineBelowPct`). Referencia de condición + `ShotDamage` (§5).
+- `CANT_STOP` — modifier con **condición de estado del run** (`streakAtLeast`) + `weaponScope`. **Referencia de condición que se re-evalúa sola**: el `watch` re-parchea el atributo del arma en cada flanco, incluso cuando la racha expira por timeout sin ningún evento de por medio. Cero timers propios en el efecto.
+
+*Con triggers y acciones:*
+- `LIFESTEAL` — trigger + acción `heal` con `roundMode`.
+- `DETONATION` — trigger `EnemyKilled` + `chance` + acción `aoeDamage` con `vfxId`. **Referencia de trigger probabilístico.**
+- `SHOTGUN_PRECISION` — trigger + acción `grantBuff` (buff temporal con 2 modifiers). **Referencia de buffs**, y del gotcha de repetir `weaponScope` dentro del buff (§6).
+- `SMG_RUSH` — `grantBuff` con **stacks** (`maxStacks` + `stackBehavior="stackRefresh"`) sobre `MoveSpeed`. **Referencia del caso inverso al anterior**: el modifier va SIN `weaponScope` (MoveSpeed no lo admite, §3) y el filtro por arma vive en el trigger.
+
+*Con hooks (estado propio, §7):*
+- `SHOTGUN_VAMPIRISM` — hook que filtra por `ctx.distance` y cura vía `ActionLibrary.run`. **Referencia de "el catálogo de condiciones no tiene el predicado que necesito, pero un hook lo resuelve sin tocar el framework"** — y de cómo llamar una acción desde un hook.
+- `RIFLE_FOCUSED_FIRE` — rampa por objetivo con el helper `rampPerTarget` + `setStacks`. **El hook más corto si necesitas estado persistente.**
+- `SMG_ALL_IN` — máquina de estado completa (rampa temporal por ráfaga sostenida, reset por recarga y por soltar el gatillo, sin loops propios).
+
+*Patrón compartido por los dos hooks:* un solo modifier registrado en `onAttach` con `value` = el máximo y `stacks` = la fracción/nivel actual (`stacks` acepta fraccionarios), actualizado con `ModifierStore.setStacks` desde `onEvent`. `sourceId = "EFFECT_"..instance.instanceId` para que el detach del motor lo limpie solo. Los triggers pueden ir **sin `actions`**: sirven solo para que `onEvent` reciba ese evento, ya filtrado por `weaponScope`.
 
 **Ejemplo nuevo típico (Rush, PDF §11.1):**
 ```lua
@@ -314,6 +377,7 @@ Más `card_0XX = "RUSH"` en `CardEffectBindings`. Nada más.
 - ❌ Tocar `_ammo`/atributos de arma directo desde un efecto — para eso están `refillAmmo` y los statKeys del patcher.
 - ❌ Dejar `ENABLED` o `DEBUG_BUS` flipeados, o Scripts de test sin borrar.
 - ❌ Reportar "terminado" sin el checklist de §8.
+- ❌ Curar dentro de un trigger `PlayerHealed` (bucle infinito de realimentación — §6). En general: que una acción dispare el mismo evento al que su trigger escucha.
 - ❌ Omitir `weaponScope` en los modifiers de un `grantBuff` creyendo que lo hereda del spec. No lo hereda (§6): el buff acabaría aplicando a todas las armas, en silencio.
 - ❌ Combinar el statKey `Damage` con `weaponScope` (del spec o del propio modifier). No aplica NUNCA y falla en silencio — para daño acotado por arquetipo va `ShotDamage` (§3).
 - ❌ Bindear un efecto con valores por rareza a UNA sola carta suelta. Si el diseño da valores por rareza, se crea el **set completo**: la misma carta (mismo `displayName`) repetida en cada rareza donde el efecto existe, todas bindeadas al mismo effectId (§1 paso 7).
