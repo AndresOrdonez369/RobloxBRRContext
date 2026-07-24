@@ -94,6 +94,28 @@ El 85–90% de los efectos del PDF se expresa **100% declarativamente** con: `mo
 8. `CombatService.onEnemyKilled:Fire(enemy, killer)` no lleva contexto (distancia, arma).
 9. `BoonManager` solo soporta **un** `triggerEvent` por def; efectos como Room Service necesitan escuchar 2+ eventos.
 
+### 3.1 Efectos HUÉRFANOS — implementados pero sin carta (2026-07-24)
+
+Estos 5 specs están **implementados, validados y cargados por el `EffectRegistry`** en cada boot, pero **ninguna carta del catálogo los referencia**. No es un bug: eran los efectos del set temático de hotel (`card_001`..`card_018`), que se eliminó del catálogo al pasar el juego a cartas de brainrot. Los specs se conservaron a propósito para no perder trabajo ya hecho.
+
+| effectId | Módulo | Qué hacía | Rarezas que tenía |
+|---|---|---|---|
+| `DAMAGE` | `Effects.Definitions.DAMAGE` | `+5/10/18/30/45%` daño (constante) | las 5 |
+| `RATE_OF_FIRE` | `Effects.Definitions.RATE_OF_FIRE` | `+5/10%` cadencia | Common, Uncommon |
+| `IRON_SKIN` | `Effects.Definitions.IRON_SKIN` | `-2/4/7/20` daño recibido (plano) | Com/Unc/Rare/Legend |
+| `LIFESTEAL` | `Effects.Definitions.LIFESTEAL` | cura `3/8/20/40/60%` del daño hecho | las 5 |
+| `SCATTER` | `Effects.Definitions.SCATTER` | `+35/50%` proyectiles | Rare, Epic |
+
+**Por qué importa:** son los 5 efectos **agnósticos de arma** del sistema. Todos los efectos vivos hoy están scopeados a un arquetipo (rifle/pistol/smg/shotgun) o a una mecánica de cargador. Si algún brainrot futuro necesita un efecto genérico "pasivo puro", estos ya están hechos y probados.
+
+**Estado:** inertes. El registry los carga y los cuenta (`[EffectRegistry] N efectos registrados` incluye estos 5), pero sin binding en `CardEffectBindings` nunca se instancian. Cero coste en runtime más allá del require de boot.
+
+**Para revivir uno:** agregar `card_0XX = "DAMAGE"` en `ReplicatedStorage.Shared.Config.CardEffectBindings` + la entrada de carta en `CardCatalog` + su texto en `CardEffectDescriptions`. No hace falta tocar el spec. Ver §7 (Cookbook).
+
+**Si se decide que no se usarán:** borrar los 5 ModuleScripts de `ServerScriptService.Services.Cards.Effects.Definitions`. Nada más los referencia — verificado por grep 2026-07-24.
+
+> Ojo con la colisión de nombres: `BoonDefinitions` tiene boons con ids parecidos (`LIFESTEAL`, `DAMAGE_UP`, `IRON_SKIN`) usados por el Daily Login y los power-ups. **Son otro sistema.** Borrar estos specs de carta no afecta a los boons.
+
 ---
 
 ## 4. Arquitectura del sistema base
